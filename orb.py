@@ -4,6 +4,7 @@
 Runs on 127.0.0.1:8090 behind Caddy (handle_path /orb*), as the openclaw user.
 - GET  /            -> index.html (the sphere + voice page)
 - POST /tts         -> {"text": ...} -> audio/mpeg from ElevenLabs
+- POST /stt         -> raw audio body -> {"text": ...} via ElevenLabs Scribe
 Auth for /tts: Authorization: Bearer <gateway token> (same secret as the dashboard).
 Keys are read at request time from ~/.openclaw/.env and ~/.openclaw/openclaw.json;
 nothing secret is stored in this repo.
@@ -60,7 +61,7 @@ def eleven_settings():
         key = env.get(key.strip("${}"), "")
     key = key or env.get("ELEVENLABS_API_KEY", "")
     voice = tts.get("speakerVoiceId") or env.get("ELEVENLABS_VOICE_ID") or DEFAULT_VOICE
-    model = tts.get("model") or "eleven_turbo_v2_5"
+    model = tts.get("model") or "eleven_flash_v2_5"
     return key, voice, model
 
 
@@ -110,7 +111,48 @@ class H(http.server.BaseHTTPRequestHandler):
         saved = ", ".join(updates.keys())
         return self._send(200, KEYS_FORM.replace("%MSG%", f"<p style=color:#4ade80>Saved: {saved}. Voice is active immediately; a new Anthropic key takes effect after the gateway restarts.</p>").encode(), "text/html; charset=utf-8")
 
+    def do_stt(self):
+        """Speech-to-text via ElevenLabs Scribe. Body: raw audio (webm/ogg/mp4/wav)."""
+        auth = self.headers.get("Authorization", "")
+        tok = gateway_token()
+        if not tok or auth != "Bearer " + tok:
+            return self._send(401, b"unauthorized")
+        n = int(self.headers.get("Content-Length", "0") or 0)
+        audio = self.rfile.read(n) if n else b""
+        if len(audio) < 800:
+            return self._send(200, json.dumps({"text": ""}).encode(), "application/json")
+        key, _, _ = eleven_settings()
+        if not key:
+            return self._send(503, b"ElevenLabs key not configured on the server")
+        ctype = self.headers.get("Content-Type", "audio/webm").split(";")[0].strip() or "audio/webm"
+        ext = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "mp4", "audio/wav": "wav", "audio/mpeg": "mp3"}.get(ctype, "webm")
+        boundary = "----brainorb" + os.urandom(8).hex()
+        body = b"".join([
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"model_id\"\r\n\r\nscribe_v1\r\n".encode(),
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"tag_audio_events\"\r\n\r\nfalse\r\n".encode(),
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.{ext}\"\r\nContent-Type: {ctype}\r\n\r\n".encode(),
+            audio, b"\r\n", f"--{boundary}--\r\n".encode(),
+        ])
+        req = urllib.request.Request(
+            "https://api.elevenlabs.io/v1/speech-to-text",
+            data=body,
+            headers={"xi-api-key": key, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = json.loads(r.read().decode())
+                text = (data.get("text") or "").strip()
+                return self._send(200, json.dumps({"text": text}).encode(), "application/json")
+        except urllib.error.HTTPError as e:
+            detail = e.read(300).decode(errors="replace")
+            return self._send(502, f"Scribe {e.code}: {detail}".encode())
+        except Exception as e:
+            return self._send(502, f"Scribe unreachable: {e}".encode())
+
     def do_POST(self):
+        if self.path.startswith("/stt"):
+            return self.do_stt()
         if self.path.startswith("/keys"):
             return self.do_keys()
         if self.path != "/tts":
@@ -151,7 +193,7 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(502, f"ElevenLabs unreachable: {e}".encode())
 
     def log_message(self, fmt, *args):  # quieter journal
-        if "/tts" in fmt % args or "GET / " in fmt % args:
+        if "/tts" in fmt % args or "/stt" in fmt % args or "GET / " in fmt % args:
             super().log_message(fmt, *args)
 
 
