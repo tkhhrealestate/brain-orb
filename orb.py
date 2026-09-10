@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""BRAIN orb: serves the sphere page and a tiny ElevenLabs TTS proxy.
+
+Runs on 127.0.0.1:8090 behind Caddy (handle_path /orb*), as the openclaw user.
+- GET  /            -> index.html (the sphere + voice page)
+- POST /tts         -> {"text": ...} -> audio/mpeg from ElevenLabs
+Auth for /tts: Authorization: Bearer <gateway token> (same secret as the dashboard).
+Keys are read at request time from ~/.openclaw/.env and ~/.openclaw/openclaw.json;
+nothing secret is stored in this repo.
+"""
+import http.server, json, os, re, urllib.request
+
+HOME = os.path.expanduser("~")
+CFG = os.path.join(HOME, ".openclaw", "openclaw.json")
+ENV = os.path.join(HOME, ".openclaw", ".env")
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM"  # "Rachel"
+
+
+def read_env():
+    out = {}
+    try:
+        for line in open(ENV):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def read_cfg():
+    try:
+        return json.load(open(CFG))
+    except Exception:
+        return {}
+
+
+def gateway_token():
+    return (((read_cfg().get("gateway") or {}).get("auth") or {}).get("token") or "").strip()
+
+
+def eleven_settings():
+    env = read_env()
+    tts = ((read_cfg().get("tts") or {}).get("providers") or {}).get("elevenlabs") or {}
+    key = tts.get("apiKey") or ""
+    if key.startswith("${"):  # ${ELEVENLABS_API_KEY} style reference
+        key = env.get(key.strip("${}"), "")
+    key = key or env.get("ELEVENLABS_API_KEY", "")
+    voice = tts.get("speakerVoiceId") or env.get("ELEVENLABS_VOICE_ID") or DEFAULT_VOICE
+    model = tts.get("model") or "eleven_turbo_v2_5"
+    return key, voice, model
+
+
+class H(http.server.BaseHTTPRequestHandler):
+    server_version = "brain-orb/1"
+
+    def _send(self, code, body, ctype="text/plain; charset=utf-8"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path in ("", "/", "/index.html"):
+            with open(os.path.join(HERE, "index.html"), "rb") as f:
+                return self._send(200, f.read(), "text/html; charset=utf-8")
+        return self._send(404, b"not found")
+
+    def do_POST(self):
+        if self.path != "/tts":
+            return self._send(404, b"not found")
+        auth = self.headers.get("Authorization", "")
+        tok = gateway_token()
+        if not tok or auth != "Bearer " + tok:
+            return self._send(401, b"unauthorized")
+        n = int(self.headers.get("Content-Length", "0") or 0)
+        try:
+            text = (json.loads(self.rfile.read(n) or b"{}").get("text") or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            return self._send(400, b"missing text")
+        key, voice, model = eleven_settings()
+        if not key:
+            return self._send(503, b"ElevenLabs key not configured on the server")
+        # keep spoken replies reasonable in length (and cost)
+        text = re.sub(r"\s+", " ", text)[:1800]
+        req = urllib.request.Request(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice}/stream",
+            data=json.dumps({
+                "text": text,
+                "model_id": model,
+                "voice_settings": {"stability": 0.45, "similarity_boost": 0.8},
+            }).encode(),
+            headers={"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return self._send(200, r.read(), "audio/mpeg")
+        except urllib.error.HTTPError as e:
+            detail = e.read(300).decode(errors="replace")
+            return self._send(502, f"ElevenLabs {e.code}: {detail}".encode())
+        except Exception as e:
+            return self._send(502, f"ElevenLabs unreachable: {e}".encode())
+
+    def log_message(self, fmt, *args):  # quieter journal
+        if "/tts" in fmt % args or "GET / " in fmt % args:
+            super().log_message(fmt, *args)
+
+
+if __name__ == "__main__":
+    http.server.ThreadingHTTPServer(("127.0.0.1", 8090), H).serve_forever()
