@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BRAIN</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin:0; height:100%; background:#000; color:#eee; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-tap-highlight-color:transparent; }
+  body { min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
+         background:radial-gradient(ellipse 90% 70% at 50% 46%, #0b0a1a 0%, #050510 45%, #020208 78%, #000 100%); padding:24px; box-sizing:border-box; overflow:hidden; position:relative; }
+  .badge { position:absolute; top:22px; left:0; right:0; display:flex; justify-content:center; pointer-events:none; }
+  .badge span { display:inline-flex; align-items:center; gap:8px; padding:6px 14px; border:1px solid rgba(255,255,255,.15); border-radius:999px; background:rgba(0,0,0,.25); font-family:ui-monospace,Menlo,monospace; font-size:11px; letter-spacing:.18em; color:#e8dfd2; }
+  .badge i { width:6px; height:6px; border-radius:50%; background:#4ade80; animation:dotPulse 2s ease-in-out infinite; }
+  .badge.off i { background:#f87171; animation:none; }
+  h1 { font-size:30px; font-weight:800; letter-spacing:.08em; margin:0 0 26px; background:linear-gradient(90deg,#a78bfa,#38bdf8,#f472b6); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  #orb { position:relative; width:300px; height:300px; cursor:pointer; transition:filter .2s; filter:drop-shadow(0 0 30px rgba(139,163,255,.35)); user-select:none; }
+  #orb .layer { position:absolute; inset:0; border-radius:50%; overflow:hidden; }
+  #core { position:absolute; left:50%; top:50%; width:90px; height:90px; border-radius:50%; transform:translate(-50%,-50%); animation:breathe 4s ease-in-out infinite; }
+  #persp { position:absolute; left:50%; top:50%; width:1px; height:1px; perspective:900px; }
+  #rot { transform-style:preserve-3d; animation:spin3d 34s linear infinite; }
+  #bars { position:absolute; bottom:18px; left:0; right:0; display:flex; align-items:center; justify-content:center; gap:3px; height:36px; }
+  #bars b { width:4px; border-radius:3px; height:6px; opacity:.3; transition:height .08s linear; }
+  .status { margin-top:22px; font-family:ui-monospace,Menlo,monospace; font-size:13px; letter-spacing:.12em; color:#a78bfa; text-transform:uppercase; min-height:18px; }
+  .text { margin-top:18px; max-width:520px; text-align:center; min-height:60px; }
+  .you { color:#7dd3fc; font-size:14px; margin-bottom:8px; font-style:italic; }
+  .her { color:#ddd; font-size:15px; line-height:1.55; }
+  .gate { position:absolute; inset:0; background:rgba(0,0,0,.92); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; z-index:9; padding:24px; text-align:center; }
+  .gate input { width:min(420px,90vw); padding:12px; background:#111; border:1px solid #333; color:#eee; border-radius:10px; text-align:center; font-size:15px; }
+  .gate button, .btn { padding:11px 18px; background:#a78bfa; border:none; color:#111; border-radius:10px; font-weight:700; cursor:pointer; }
+  .gate small { color:#888; max-width:420px; line-height:1.5; }
+  .err { color:#f87171; font-size:13px; }
+  @keyframes spin3d { from { transform:rotateX(14deg) rotateY(0deg);} to { transform:rotateX(14deg) rotateY(360deg);} }
+  @keyframes twinkle { 0%,100% { opacity:.1;} 50% { opacity:.95;} }
+  @keyframes bokeh { 0%,100% { opacity:.15; transform:translate(-50%,-50%) scale(1);} 50% { opacity:.4; transform:translate(-50%,-50%) scale(1.15);} }
+  @keyframes breathe { 0%,100% { opacity:.85;} 50% { opacity:1;} }
+  @keyframes hue { 0% { filter:hue-rotate(0deg);} 100% { filter:hue-rotate(360deg);} }
+  @keyframes dotPulse { 0%,100% { opacity:1; box-shadow:0 0 0 0 rgba(74,222,128,.6);} 50% { opacity:.6; box-shadow:0 0 0 6px rgba(74,222,128,0);} }
+</style>
+</head>
+<body>
+  <div class="badge" id="badge"><span><i></i>SYSTEM ONLINE</span></div>
+  <h1>BRAIN</h1>
+
+  <div id="orb">
+    <div class="layer" id="field"></div>
+    <div id="persp"><div id="rot"></div></div>
+    <div id="core"></div>
+    <div id="bars"></div>
+  </div>
+
+  <div class="status" id="status">tap to start talking</div>
+  <div class="text"><div class="you" id="you"></div><div class="her" id="her"></div></div>
+
+  <div class="gate" id="gate">
+    <div style="font-size:18px;font-weight:700">Connect to BRAIN</div>
+    <input id="secret" type="password" placeholder="Gateway secret" autocomplete="off">
+    <button id="connect">Connect</button>
+    <div class="err" id="gateErr"></div>
+    <small>Same secret as the BRAIN dashboard. Stored only in this browser.</small>
+  </div>
+
+<script>
+(() => {
+  // ---------- palettes per state ----------
+  const PAL = {
+    idle:      ["#38bdf8","#a78bfa","#f472b6"],
+    listening: ["#38bdf8","#a78bfa","#f472b6"],
+    thinking:  ["#34d399","#22d3ee","#3b82f6"],
+    speaking:  ["#f472b6","#facc15","#38bdf8"],
+    error:     ["#f87171","#fb923c","#fecaca"],
+  };
+  const ROT = { idle:34, listening:22, thinking:9, speaking:16, error:40 };
+  const HUE = { idle:18, listening:14, thinking:6, speaking:10, error:20 };
+
+  const $ = (id) => document.getElementById(id);
+  const orb=$("orb"), field=$("field"), rot=$("rot"), core=$("core"), barsEl=$("bars"), statusEl=$("status");
+  const R = 108, SIZE = 300;
+
+  // ---------- build geometry ----------
+  const dots=[], sparks=[], bokeh=[];
+  const golden = Math.PI*(3-Math.sqrt(5));
+  for (let i=0;i<220;i++){ const y=1-(i/219)*2, r=Math.sqrt(Math.max(0,1-y*y)), t=golden*i;
+    dots.push({x:Math.cos(t)*r*R, y:y*R, z:Math.sin(t)*r*R, c:i%3, j:Math.random()*3}); }
+  for (let i=0;i<120;i++) sparks.push({x:Math.random()*100,y:Math.random()*100,s:.8+Math.random()*2.6,c:i%3,d:1.4+Math.random()*3.4,dl:Math.random()*4});
+  for (let i=0;i<16;i++) bokeh.push({x:Math.random()*100,y:Math.random()*100,s:12+Math.random()*55,b:5+Math.random()*8,c:i%3,d:3+Math.random()*4,dl:Math.random()*3});
+
+  const dotEls=[], sparkEls=[], bokehEls=[], barEls=[];
+  bokeh.forEach(k=>{ const e=document.createElement("div"); e.style.cssText=`position:absolute;left:${k.x}%;top:${k.y}%;width:${k.s}px;height:${k.s}px;border-radius:50%;filter:blur(${k.b}px);opacity:.2;transform:translate(-50%,-50%);animation:bokeh ${k.d}s ease-in-out infinite;animation-delay:${k.dl}s`; field.appendChild(e); bokehEls.push(e); });
+  sparks.forEach(s=>{ const e=document.createElement("div"); e.style.cssText=`position:absolute;left:${s.x}%;top:${s.y}%;width:${s.s}px;height:${s.s}px;border-radius:50%;background:#fff9ec;transform:translate(-50%,-50%);animation:twinkle ${s.d}s ease-in-out infinite;animation-delay:${s.dl}s`; field.appendChild(e); sparkEls.push(e); });
+  dots.forEach(d=>{ const depth=(d.z+R)/(2*R), sc=.45+depth*1.05, sz=2.2+d.j; const e=document.createElement("div");
+    e.style.cssText=`position:absolute;left:50%;top:50%;width:${sz}px;height:${sz}px;border-radius:50%;background:#fff9ec;opacity:${.3+depth*.65};transform:translate3d(${d.x}px,${d.y}px,${d.z}px) translate(-50%,-50%) scale(${sc});transform-style:preserve-3d`;
+    e.dataset.depth=depth; rot.appendChild(e); dotEls.push(e); });
+  for (let i=0;i<22;i++){ const b=document.createElement("b"); barsEl.appendChild(b); barEls.push(b); }
+
+  let state="idle";
+  function applyPalette(){
+    const p=PAL[state];
+    field.style.animation=`hue ${HUE[state]}s linear infinite`;
+    rot.style.animationDuration=ROT[state]+"s";
+    bokehEls.forEach((e,i)=>e.style.background=p[bokeh[i].c]);
+    sparkEls.forEach((e,i)=>e.style.boxShadow=`0 0 6px 1px ${p[sparks[i].c]}`);
+    dotEls.forEach((e,i)=>{ const depth=+e.dataset.depth; e.style.boxShadow=`0 0 ${4+depth*8}px ${1+depth*3}px ${p[dots[i].c]}`; });
+    barEls.forEach((b,i)=>b.style.background=p[i%3]);
+    core.style.background=`radial-gradient(circle,#fffdf6 0%,${p[0]} 35%,${p[1]} 60%,transparent 82%)`;
+    core.style.boxShadow=`0 0 ${SIZE*.25}px ${SIZE*.08}px ${p[1]}55, 0 0 ${SIZE*.45}px ${SIZE*.13}px ${p[0]}2a`;
+  }
+  function setState(s){ state=s; applyPalette();
+    statusEl.textContent = s==="idle" ? (conversing ? "tap to end" : "tap to start talking")
+      : s==="listening" ? "listening… (tap to end)" : s==="thinking" ? "thinking…"
+      : s==="speaking" ? "speaking… (talk or tap to interrupt)" : "error — try again"; }
+  applyPalette();
+
+  // ---------- audio-reactive loop ----------
+  let level=0, analyser=null, audioCtx=null; const data=new Uint8Array(128);
+  (function loop(now){
+    if (analyser){ analyser.getByteFrequencyData(data); let s=0; for (const v of data) s+=v; level += (s/data.length/255 - level)*.35; }
+    else level += (0-level)*.2;
+    const t=(now||0)/1000;
+    core.style.transform=`translate(-50%,-50%) scale(${1+level*.55})`; core.style.opacity=.85+level*.15;
+    orb.style.filter=`drop-shadow(0 0 30px rgba(139,163,255,.35)) brightness(${1+level*.35}) saturate(${1+level*.35})`;
+    barEls.forEach((b,i)=>{ const w=.5+.5*Math.sin(t*(2+(i%5)*.6)+i); b.style.height=Math.max(6, level*40*w+4)+"px"; b.style.opacity=.4+Math.min(1,level*1.4)*.6; });
+    requestAnimationFrame(loop);
+  })(0);
+
+  function attachAnalyser(audio){
+    try { const AC=window.AudioContext||window.webkitAudioContext; if(!AC) return;
+      audioCtx = audioCtx || new AC(); if (audioCtx.state==="suspended") audioCtx.resume().catch(()=>{});
+      const src=audioCtx.createMediaElementSource(audio); const an=audioCtx.createAnalyser(); an.fftSize=256; an.smoothingTimeConstant=.6;
+      src.connect(an); an.connect(audioCtx.destination); analyser=an; } catch(e){}
+  }
+
+  // ---------- connection (gateway secret) ----------
+  const KEY="brain_orb_secret";
+  let secret = localStorage.getItem(KEY) || "";
+  const gate=$("gate");
+  async function verify(tok){
+    const r = await fetch("/v1/models",{headers:{Authorization:"Bearer "+tok}});
+    return r.ok;
+  }
+  async function connect(tok){
+    $("gateErr").textContent="";
+    try { if (await verify(tok)) { secret=tok; localStorage.setItem(KEY,tok); gate.style.display="none"; $("badge").classList.remove("off"); return true; }
+      $("gateErr").textContent="Wrong secret."; } catch { $("gateErr").textContent="Can't reach BRAIN."; }
+    return false;
+  }
+  $("connect").onclick=()=>connect($("secret").value.trim());
+  $("secret").addEventListener("keydown",e=>{ if(e.key==="Enter") connect($("secret").value.trim()); });
+  if (secret) connect(secret).then(ok=>{ if(!ok){ localStorage.removeItem(KEY); secret=""; gate.style.display="flex"; } });
+
+  // ---------- speech in ----------
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  let rec=null, conversing=false, audio=null;
+  if (!SR){ statusEl.textContent="voice needs Chrome / Safari / Edge"; }
+  else {
+    rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang="en-US";
+    rec.onstart=()=>{ if(state!=="speaking") setState("listening"); };
+    rec.onspeechstart=()=>{ if(state==="speaking" && audio) audio.pause(); setState("listening"); };
+    rec.onerror=(e)=>{ if(e.error==="no-speech"||e.error==="aborted") return;
+      if(e.error==="not-allowed"||e.error==="service-not-allowed"){ conversing=false; }
+      setState("error"); setTimeout(()=>{ if(state==="error") setState("idle"); },1200); };
+    rec.onend=()=>{ if(conversing){ try{ rec.start(); }catch{} } };
+    rec.onresult=(e)=>{ const r=e.results[e.results.length-1]; const text=r[0].transcript; $("you").textContent="“"+text+"”"; if(r.isFinal) send(text); };
+  }
+
+  // ---------- chat with OpenClaw ----------
+  async function send(text){
+    setState("thinking"); $("her").textContent="";
+    try {
+      const r=await fetch("/v1/chat/completions",{method:"POST",headers:{Authorization:"Bearer "+secret,"Content-Type":"application/json","x-openclaw-session-key":"brain-orb"},
+        body:JSON.stringify({model:"openclaw/default",user:"brain-orb",messages:[{role:"user",content:text}]})});
+      if(!r.ok){ const d=await r.text(); throw new Error("BRAIN "+r.status+": "+d.slice(0,160)); }
+      const j=await r.json(); const reply=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||"(no reply)";
+      $("her").textContent=reply; speak(reply);
+    } catch(err){ $("her").textContent=String(err.message||err); setState("error"); setTimeout(()=>{ if(state==="error") setState(conversing?"listening":"idle"); },1800); }
+  }
+
+  // ---------- speech out (ElevenLabs via /orb/tts) ----------
+  async function speak(text){
+    if (audio){ audio.pause(); audio=null; }
+    try {
+      const r=await fetch("/orb/tts",{method:"POST",headers:{Authorization:"Bearer "+secret,"Content-Type":"application/json"},body:JSON.stringify({text})});
+      if(!r.ok){ const d=await r.text().catch(()=>""); $("her").textContent += "\n\n(voice unavailable: "+d.slice(0,120)+")"; setState(conversing?"listening":"idle"); return; }
+      const url=URL.createObjectURL(await r.blob()); const a=new Audio(url); audio=a; attachAnalyser(a);
+      a.onplay=()=>setState("speaking");
+      a.onended=()=>{ URL.revokeObjectURL(url); if(state==="speaking") setState(conversing?"listening":"idle"); };
+      a.onerror=()=>{ URL.revokeObjectURL(url); if(state==="speaking") setState(conversing?"listening":"idle"); };
+      await a.play();
+    } catch { setState(conversing?"listening":"idle"); }
+  }
+
+  // ---------- tap logic ----------
+  orb.onclick=()=>{
+    if (!secret){ gate.style.display="flex"; return; }
+    if (!rec) return;
+    if (!conversing){ conversing=true; $("you").textContent=""; $("her").textContent=""; try{ rec.start(); }catch{} return; }
+    if (state==="speaking"){ if(audio) audio.pause(); setState("listening"); return; }
+    conversing=false; try{ rec.stop(); }catch{} if(audio) audio.pause(); setState("idle");
+  };
+})();
+</script>
+</body>
+</html>
